@@ -1,26 +1,21 @@
 package src.service;
 
-// SCM Exception Framework Imports
 import com.scm.exceptions.*;
 import com.scm.exceptions.categories.IMLAlgorithmicExceptionSource;
+import exceptions.WarehouseMgmtSubsystem; // Used as the category for model errors
 import java.io.*;
 import java.util.*;
 import src.core.VocData;
 import src.patterns.VocObserver;
 
-/**
- * ML Component for Sentiment Analysis and Keyword Extraction.
- * Integrated with SCM Exception Framework (Category 10).
- */
 public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
 
+    private final WarehouseMgmtSubsystem exceptions =
+        WarehouseMgmtSubsystem.INSTANCE;
     private static final String VOC_SCRIPT = "voc_analyzer.py";
     private final List<VocObserver> observers = new ArrayList<>();
-    private SCMExceptionHandler scmHandler; // Mandated by SCM framework
+    private SCMExceptionHandler scmHandler;
 
-    /**
-     * Mandated by SCM framework to inject the central handler at startup.
-     */
     @Override
     public void registerHandler(SCMExceptionHandler h) {
         this.scmHandler = h;
@@ -30,28 +25,19 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
         observers.add(obs);
     }
 
-    /**
-     * Orchestrates the NLP analysis.
-     * If Python execution fails, it fires a Category 10 exception and returns fallback data.
-     */
     public VocData processComment(String comment) {
-        VocData data;
         try {
-            data = runPythonAnalyzer(comment);
+            return runPythonAnalyzer(comment);
         } catch (Exception e) {
-            // Category 10: ML Model Failure (ID 451)
+            // ID 451: FORECAST_MODEL_FAILURE
+            // Note: fireModelFailure is used for the registered popup
             fireModelFailure(
                 451,
                 "SentimentAnalysisModel",
                 e.getMessage()
             );
-
-            // Fallback logic: Never halt the system for ML errors
-            data = new VocData("Neutral", new ArrayList<>());
+            return new VocData("Neutral", new ArrayList<>());
         }
-
-        notifyObservers(data);
-        return data;
     }
 
     private VocData runPythonAnalyzer(String comment) throws Exception {
@@ -59,7 +45,6 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
         pb.redirectErrorStream(true);
         Process process = pb.start();
 
-        // Pass comment via STDIN
         try (
             BufferedWriter writer = new BufferedWriter(
                 new OutputStreamWriter(process.getOutputStream(), "UTF-8")
@@ -68,7 +53,6 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
             writer.write(comment != null ? comment : "");
         }
 
-        // Read results from STDOUT
         try (
             BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), "UTF-8")
@@ -76,30 +60,22 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
         ) {
             String sentiment = reader.readLine();
             String kwLine = reader.readLine();
-
-            if (process.waitFor() != 0 || sentiment == null) {
-                throw new Exception(
-                    "Python script execution failed or returned empty output."
-                );
-            }
+            if (
+                process.waitFor() != 0 || sentiment == null
+            ) throw new Exception("Script failure");
 
             List<String> keywords = new ArrayList<>();
             if (kwLine != null && !kwLine.isEmpty()) {
-                for (String kw : kwLine.split(",")) {
+                for (String kw : kwLine.split(","))
                     keywords.add(kw.trim());
-                }
             }
             return new VocData(sentiment.trim(), keywords);
         }
     }
 
     private void notifyObservers(VocData data) {
-        for (VocObserver obs : observers) {
-            obs.update(data);
-        }
+        for (VocObserver obs : observers) obs.update(data);
     }
-
-    // --- SCM INTERFACE IMPLEMENTATIONS (Category 10) ---
 
     @Override
     public void fireModelFailure(
@@ -107,44 +83,41 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
         String modelName,
         String reason
     ) {
-        if (scmHandler == null) return; // Standard framework safeguard
-
-        // Create the standard SCM event
+        if (scmHandler == null) return;
         scmHandler.handle(
             new SCMExceptionEvent(
                 exceptionId,
-                "FORECAST_MODEL_FAILURE", // Official SCM Registry name
+                "FORECAST_MODEL_FAILURE",
                 Severity.MAJOR,
                 "Product Returns",
-                "Forecast model failed to execute.",
-                "Model: " + modelName + " | Reason: " + reason // Runtime detail
+                "ML model failure.",
+                "Model: " + modelName
             )
         );
     }
 
-    // Required mandated methods for IMLAlgorithmicExceptionSource
     @Override
     public void fireModelDegradation(
         int id,
-        String name,
-        String metric,
-        double threshold,
-        double actual
+        String n,
+        String m,
+        double t,
+        double a
     ) {}
 
     @Override
     public void fireMissingInputData(
         int id,
-        String name,
-        String type,
-        String period
+        String n,
+        String t,
+        String p
     ) {}
 
     @Override
     public void fireAlgorithmicAlert(
         int id,
-        String name,
-        String entityId,
-        String detail
+        String n,
+        String e,
+        String d
     ) {}
 }

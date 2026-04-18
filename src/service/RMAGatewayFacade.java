@@ -1,57 +1,46 @@
 package src.service;
 
-import com.jackfruit.scm.database.adapter.ExceptionHandlingAdapter;
 import com.jackfruit.scm.database.adapter.InventoryAdapter;
 import com.jackfruit.scm.database.adapter.ReturnsAdapter;
-// SCM Database Module Imports
 import com.jackfruit.scm.database.facade.SupplyChainDatabaseFacade;
 import com.jackfruit.scm.database.model.InventoryModels.StockAdjustmentRequest;
 import com.jackfruit.scm.database.model.ReturnsModels.ProductReturnRequest;
-// SCM Exception Framework Imports
 import com.scm.exceptions.*;
 import com.scm.exceptions.categories.*;
+import exceptions.DatabaseDesignSubsystem;
+import exceptions.WarehouseMgmtSubsystem;
 import java.util.ArrayList;
 import java.util.UUID;
 import src.core.*;
-import src.core.VocData;
 import src.patterns.*;
 
-/**
- * Integrated Facade for Product Advancement and Returns.
- * Connects the Returns Subsystem with the Inventory Subsystem via shared Adapters.
- */
 public class RMAGatewayFacade
     implements
         IInputValidationExceptionSource,
         ISystemInfrastructureExceptionSource
 {
 
-    private static final String DEFAULT_CUSTOMER_ID = "CUST-01";
-    private static final String DEFAULT_LOCATION = "WH-MAIN-01"; // Required by Inventory API
+    private final WarehouseMgmtSubsystem warehouseExceptions =
+        WarehouseMgmtSubsystem.INSTANCE;
+    private final DatabaseDesignSubsystem dbExceptions =
+        DatabaseDesignSubsystem.INSTANCE;
 
     private final ReturnValidationHandler validationChain;
     private final VocAnalyzer vocAnalyzer = new VocAnalyzer();
 
-    // Database Module Adapters
     private SupplyChainDatabaseFacade dbFacade;
     private ReturnsAdapter returnsAdapter;
     private InventoryAdapter inventoryAdapter;
-    private ExceptionHandlingAdapter exceptionAdapter;
-
     private SCMExceptionHandler scmHandler;
 
     public RMAGatewayFacade() {
         this.validationChain = ValidationChainFactory.createDefaultChain();
         try {
-            // Entry point for the shared database module
             this.dbFacade = new SupplyChainDatabaseFacade();
             this.returnsAdapter = new ReturnsAdapter(dbFacade);
             this.inventoryAdapter = new InventoryAdapter(dbFacade);
-            this.exceptionAdapter = new ExceptionHandlingAdapter(dbFacade);
         } catch (Exception e) {
-            System.err.println(
-                "Database Module Initialization Failed: " + e.getMessage()
-            );
+            dbExceptions.onDbConnectionFailed("localhost");
         }
     }
 
@@ -61,15 +50,11 @@ public class RMAGatewayFacade
         this.vocAnalyzer.registerHandler(h);
     }
 
-    /**
-     * Orchestrates the return process, including inventory validation and restock.
-     */
     public void processReturn(
         ReturnRequest request,
         String condition,
         String notes
     ) {
-        // --- Input Validation ---
         if (request.basePrice <= 0) {
             fireInvalidReference(
                 11,
@@ -80,14 +65,10 @@ public class RMAGatewayFacade
         }
 
         try {
-            // 1. Inventory Validation
-            // Verify item exists in Inventory Master before processing return
+            // 1. Inventory Validation (ID 14)
             if (!inventoryAdapter.productExists(request.productId)) {
-                // Fire Code 166: ITEM_NOT_FOUND as mandated by Inventory contract
-                raiseUnregistered(
-                    166,
-                    Severity.MAJOR,
-                    "Product ID not found: " + request.productId
+                warehouseExceptions.onInvalidProductReference(
+                    request.productId
                 );
                 return;
             }
@@ -98,21 +79,38 @@ public class RMAGatewayFacade
                 notes
             );
             ValidationResult val = validationChain.handle(item);
-            String status = val.approved ? "APPROVED" : "REJECTED";
 
+            // 2. Business Rule Exceptions (Warranty & Condition)
+            if (!val.approved) {
+                if (val.message.contains("Warranty")) {
+                    warehouseExceptions.onWarrantyExpired(
+                        request.orderId,
+                        "Check Original Order"
+                    );
+                    return;
+                }
+                if (val.message.contains("condition")) {
+                    warehouseExceptions.onReturnConditionInvalid(
+                        request.orderId,
+                        condition
+                    );
+                    return;
+                }
+            }
+
+            String status = val.approved ? "APPROVED" : "REJECTED";
             VocData voc = val.approved
                 ? vocAnalyzer.processComment(request.customerComment)
                 : new VocData("Neutral", new ArrayList<>());
 
-            String returnRequestId =
+            // 3. Database Persistence via Module
+            String returnId =
                 "RET-" + UUID.randomUUID().toString().substring(0, 8);
-
-            // 2. Log Return Request
             returnsAdapter.createReturnRequest(
                 new ProductReturnRequest(
-                    returnRequestId,
+                    returnId,
                     request.orderId,
-                    DEFAULT_CUSTOMER_ID,
+                    "CUST-01",
                     request.productId,
                     notes,
                     request.customerComment,
@@ -120,94 +118,49 @@ public class RMAGatewayFacade
                 )
             );
 
-            // 3. Inventory Integration (Restock)
+            // 4. Inventory Restock Integration
             if (val.approved) {
-                // Execute restock via Inventory execution engine
                 inventoryAdapter.createStockAdjustment(
                     new StockAdjustmentRequest(
                         "ADJ-" +
                             UUID.randomUUID().toString().substring(0, 8),
                         request.productId,
-                        "INCREASE", // Type for incoming returns
-                        1, // Quantity
-                        "Approved return restock: " + returnRequestId,
+                        "INCREASE",
+                        1,
+                        "Restock: " + returnId,
                         "SYSTEM"
                     )
                 );
             }
         } catch (Exception e) {
-            // 4. Centralized Exception Logging
-            if (exceptionAdapter != null) {
-                exceptionAdapter.logException(
-                    "Product Returns",
-                    "MAJOR",
-                    e.getMessage(),
-                    e.toString()
-                );
-            }
-            firePlatformFailure(
-                0,
-                "Subsystem_Facade",
-                "GENERAL_PROCESS",
-                e.getMessage()
-            );
+            dbExceptions.onDbConnectionFailed("localhost");
         }
     }
 
-    // --- SCM Interface Implementations ---
-
     @Override
-    public void fireInvalidReference(
-        int exceptionId,
-        String refType,
-        String refValue
-    ) {
-        if (scmHandler == null) return;
-        scmHandler.handle(
-            new SCMExceptionEvent(
-                exceptionId,
-                "INVALID_REFUND_AMOUNT",
-                Severity.MAJOR,
-                "Product Returns",
-                "Refund error.",
-                refType + "=" + refValue
-            )
-        );
-    }
-
-    @Override
-    public void firePlatformFailure(
-        int exceptionId,
-        String component,
-        String operation,
-        String detail
-    ) {
-        if (scmHandler == null) return;
-        String name = (exceptionId == 0)
-            ? "UNREGISTERED_EXCEPTION"
-            : "DB_CONNECTION_FAILED";
-        scmHandler.handle(
-            new SCMExceptionEvent(
-                exceptionId,
-                name,
-                Severity.MAJOR,
-                "Product Returns",
-                "Infrastructure error.",
-                component + " during " + operation + ": " + detail
-            )
-        );
-    }
-
-    private void raiseUnregistered(int id, Severity sev, String detail) {
-        if (scmHandler == null) return;
-        scmHandler.handle(
+    public void fireInvalidReference(int id, String t, String v) {
+        if (scmHandler != null) scmHandler.handle(
             new SCMExceptionEvent(
                 id,
-                "BUSINESS_LOGIC_VIOLATION",
-                sev,
-                "Product Returns",
-                "Validation failed.",
-                detail
+                "INVALID_REFUND_AMOUNT",
+                Severity.MAJOR,
+                "Returns",
+                "Refund error",
+                t + "=" + v
+            )
+        );
+    }
+
+    @Override
+    public void firePlatformFailure(int id, String c, String o, String d) {
+        if (scmHandler != null) scmHandler.handle(
+            new SCMExceptionEvent(
+                id,
+                "DB_CONNECTION_FAILED",
+                Severity.MAJOR,
+                "Returns",
+                "Infrastructure error",
+                d
             )
         );
     }
