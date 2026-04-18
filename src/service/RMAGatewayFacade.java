@@ -21,8 +21,10 @@ public class RMAGatewayFacade
 {
 
     private static final String DEFAULT_CUSTOMER_ID = "CUST-01";
-    private static final String DEFAULT_RETURN_DOCK_BIN = "BIN-RETURN-DOCK";
-    private static final String DEFAULT_RETURN_ZONE_BIN = "BIN-RETURNS-ZONE";
+    private static final String DEFAULT_RETURN_DOCK_BIN =
+        "BIN-RETURN-DOCK";
+    private static final String DEFAULT_RETURN_ZONE_BIN =
+        "BIN-RETURNS-ZONE";
 
     private final ReturnValidationHandler validationChain;
     private final ReturnDAO dao = new ReturnDAO();
@@ -62,7 +64,11 @@ public class RMAGatewayFacade
         }
 
         try {
-            InspectedItem item = new InspectedItem(request, condition, notes);
+            InspectedItem item = new InspectedItem(
+                request,
+                condition,
+                notes
+            );
             ValidationResult val = validationChain.handle(item);
 
             String status = val.approved ? "APPROVED" : "REJECTED";
@@ -116,14 +122,16 @@ public class RMAGatewayFacade
                         mapConditionToWarehouseStatus(condition)
                     );
                     dao.insertStockMovementForReturn(
-                        "MOV-" + UUID.randomUUID().toString().substring(0, 8),
+                        "MOV-" +
+                            UUID.randomUUID().toString().substring(0, 8),
                         DEFAULT_RETURN_DOCK_BIN,
                         DEFAULT_RETURN_ZONE_BIN,
                         request.productId,
                         returnQty
                     );
                     dao.insertStockAdjustmentForReturn(
-                        "ADJ-" + UUID.randomUUID().toString().substring(0, 8),
+                        "ADJ-" +
+                            UUID.randomUUID().toString().substring(0, 8),
                         request.productId,
                         returnQty,
                         "SYSTEM",
@@ -235,16 +243,36 @@ public class RMAGatewayFacade
     ) {}
 
     @Override
-    public void fireValidationFailure(int id, String t, String e, String r) {}
+    public void fireValidationFailure(
+        int id,
+        String t,
+        String e,
+        String r
+    ) {}
 
     @Override
-    public void fireProcessingError(int id, String p, String e, String r) {}
+    public void fireProcessingError(
+        int id,
+        String p,
+        String e,
+        String r
+    ) {}
 
     @Override
-    public void firePerformanceDegradation(int id, String c, long t, long a) {}
+    public void firePerformanceDegradation(
+        int id,
+        String c,
+        long t,
+        long a
+    ) {}
 
     @Override
-    public void fireRenderOrFormatError(int id, String c, String f, String r) {}
+    public void fireRenderOrFormatError(
+        int id,
+        String c,
+        String f,
+        String r
+    ) {}
 
     private String mapConditionToWarehouseStatus(String condition) {
         if (condition == null) return "PARTIAL";

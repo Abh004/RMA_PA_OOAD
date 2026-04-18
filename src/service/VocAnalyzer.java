@@ -10,16 +10,16 @@ import src.patterns.VocObserver;
 
 /**
  * ML Component for Sentiment Analysis and Keyword Extraction.
- * Implements Category 10 (ML / Algorithmic Errors)[cite: 982].
+ * Integrated with SCM Exception Framework (Category 10).
  */
 public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
 
     private static final String VOC_SCRIPT = "voc_analyzer.py";
     private final List<VocObserver> observers = new ArrayList<>();
-    private SCMExceptionHandler scmHandler; // Mandated by SCM framework [cite: 196]
+    private SCMExceptionHandler scmHandler; // Mandated by SCM framework
 
     /**
-     * Mandated by SCM framework to inject the central handler at startup[cite: 191, 198].
+     * Mandated by SCM framework to inject the central handler at startup.
      */
     @Override
     public void registerHandler(SCMExceptionHandler h) {
@@ -32,17 +32,21 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
 
     /**
      * Orchestrates the NLP analysis.
-     * If ML execution fails, it fires a Category 10 exception and returns fallback data.
+     * If Python execution fails, it fires a Category 10 exception and returns fallback data.
      */
     public VocData processComment(String comment) {
         VocData data;
         try {
             data = runPythonAnalyzer(comment);
         } catch (Exception e) {
-            // Category 10: ML Model Failure (ID 451) [cite: 986, 994]
-            fireModelFailure(451, "SentimentAnalysisModel", e.getMessage());
+            // Category 10: ML Model Failure (ID 451)
+            fireModelFailure(
+                451,
+                "SentimentAnalysisModel",
+                e.getMessage()
+            );
 
-            // Fallback logic: Never halt the system for ML errors [cite: 983]
+            // Fallback logic: Never halt the system for ML errors
             data = new VocData("Neutral", new ArrayList<>());
         }
 
@@ -103,22 +107,22 @@ public class VocAnalyzer implements IMLAlgorithmicExceptionSource {
         String modelName,
         String reason
     ) {
-        if (scmHandler == null) return; // Standard framework safeguard [cite: 204]
+        if (scmHandler == null) return; // Standard framework safeguard
 
-        // Create the standard SCM event [cite: 266]
+        // Create the standard SCM event
         scmHandler.handle(
             new SCMExceptionEvent(
-                exceptionId, // ID 451 from register
-                "FORECAST_MODEL_FAILURE", // Official name
-                Severity.MAJOR, // Official severity
-                "Product Returns", // Subsystem
-                "Forecast model failed to execute.", // Official message
-                "Model: " + modelName + " | Reason: " + reason // Runtime detail [cite: 264]
+                exceptionId,
+                "FORECAST_MODEL_FAILURE", // Official SCM Registry name
+                Severity.MAJOR,
+                "Product Returns",
+                "Forecast model failed to execute.",
+                "Model: " + modelName + " | Reason: " + reason // Runtime detail
             )
         );
     }
 
-    // Unused mandated methods for IMLAlgorithmicExceptionSource [cite: 999]
+    // Required mandated methods for IMLAlgorithmicExceptionSource
     @Override
     public void fireModelDegradation(
         int id,
