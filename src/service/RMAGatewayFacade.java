@@ -13,9 +13,13 @@ import java.util.UUID;
 import src.core.*;
 import src.integration.DeliveryMonitoringAdapter;
 import src.integration.IDeliveryMonitoringClient;
+import src.integration.IMultiLevelPricingClient;
 import src.integration.IOrderFulfillmentClient;
 import src.integration.IOrderFulfillmentClient.OrderValidationResult;
+import src.integration.IReturnStatisticsObserver;
+import src.integration.MultiLevelPricingClient;
 import src.integration.OrderFulfillmentClient;
+import src.integration.ReturnStatisticsObserver;
 import src.patterns.*;
 
 /**
@@ -54,6 +58,8 @@ public class RMAGatewayFacade {
     private InventoryUI inventoryUI; // §3: only interact via this interface
     private final IDeliveryMonitoringClient deliveryClient; // Real-Time Delivery (Ramen Noodles)
     private IOrderFulfillmentClient orderClient; // Order Fulfillment (VERTEX)
+    private IReturnStatisticsObserver returnStatsObserver; // Return analytics tracking (Phase 7)
+    private IMultiLevelPricingClient pricingClient; // Multi-level pricing (Phase 2)
 
     public RMAGatewayFacade() {
         this.validationChain = ValidationChainFactory.createDefaultChain();
@@ -73,6 +79,24 @@ public class RMAGatewayFacade {
             InventoryExceptionSource exceptionSource = new InventoryExceptionSource();
             exceptionSource.registerHandler(SCMExceptionHandler.INSTANCE);
             this.inventoryUI = new InventoryService(exceptionSource);
+
+            // Return Statistics Observer — Phase 7 (analytics tracking)
+            this.returnStatsObserver = new ReturnStatisticsObserver(returnsAdapter);
+
+            // Multi-Level Pricing Client — Phase 2 (fraud prevention via market prices)
+            try {
+                // Use reflection to avoid compile-time dependency on pricing subsystem
+                Class<?> priceListManagerClass = Class.forName(
+                        "com.pricingos.pricing.pricelist.PriceListManager"
+                );
+                Object priceListManager = priceListManagerClass.getDeclaredConstructor().newInstance();
+                this.pricingClient = new MultiLevelPricingClient(priceListManager);
+                System.out.println("[RMA] Pricing client initialized successfully");
+            } catch (Exception e) {
+                System.err.println("[RMA] WARNING: Could not initialize PricingClient: "
+                        + e.getMessage() + " — will fall back to request.basePrice");
+                this.pricingClient = null;
+            }
 
         } catch (Exception e) {
             System.err.println("[RMA] UNREGISTERED_EXCEPTION: Database initialization failed: "
@@ -104,10 +128,34 @@ public class RMAGatewayFacade {
             return 0.0;
         }
 
-        // Override customer-supplied basePrice with the authoritative order total
-        double effectiveBasePrice = (orderVal != null && orderVal.authoritativeBasePrice > 0)
-                ? orderVal.authoritativeBasePrice
-                : request.basePrice;
+        // ── Step 0+: Get authoritative base price from pricing (Phase 2) ────────────
+        // Prevent refund fraud by using market price, not customer-supplied claim
+        double authoritativeBasePrice = request.basePrice;  // fallback default
+        if (this.pricingClient != null) {
+            try {
+                // Query: getActivePrice(skuId, region, channel)
+                authoritativeBasePrice = this.pricingClient.getActivePrice(
+                        request.productId,    // SKU
+                        "GLOBAL",             // region (from order or default)
+                        "ONLINE"              // channel (parameterizable)
+                );
+                System.out.println("[RMA] Step 0+: Got market price ₹" + authoritativeBasePrice
+                        + " from pricing (original claim: ₹" + request.basePrice + ")");
+
+            } catch (Exception e) {
+                // Price not found or lookup failed — graceful fallback
+                System.err.println("[RMA] Step 0+: Price lookup failed for SKU=" + request.productId
+                        + ": " + e.getMessage() + " — using request.basePrice as fallback");
+                authoritativeBasePrice = request.basePrice;
+            }
+        }
+
+        // Override customer-supplied basePrice with the authoritative market price
+        double effectiveBasePrice = authoritativeBasePrice;
+        if (orderVal != null && orderVal.authoritativeBasePrice > 0) {
+            // Order Fulfillment also provided a price — use the minimum (most conservative)
+            effectiveBasePrice = Math.min(authoritativeBasePrice, orderVal.authoritativeBasePrice);
+        }
 
         String resolvedCustomerId = (orderVal != null && orderVal.customerId != null)
                 ? orderVal.customerId
@@ -241,19 +289,25 @@ public class RMAGatewayFacade {
             System.out.println("[RMA] Warranty valid until: " + warrantyValidUntil.toLocalDate()
                     + " (" + warrantyDays + " days from delivery, category=" + request.category + ")");
 
-            returnsAdapter.createProductReturn(
-                    new ProductReturn(
-                            returnId,
-                            request.orderId,
-                            resolvedCustomerId, // from Order Fulfillment validation
-                            request.productId,
-                            notes + " | Refund: ₹" + String.format("%.2f", refundAmount)
-                                    + " | Disposition: " + disposition,
-                            request.customerComment,
-                            transportDetails,
-                            warrantyValidUntil,
-                            "APPROVED",
-                            LocalDateTime.now()));
+            ProductReturn returnRecord = new ProductReturn(
+                    returnId,
+                    request.orderId,
+                    resolvedCustomerId, // from Order Fulfillment validation
+                    request.productId,
+                    notes + " | Refund: ₹" + String.format("%.2f", refundAmount)
+                            + " | Disposition: " + disposition,
+                    request.customerComment,
+                    transportDetails,
+                    warrantyValidUntil,
+                    "APPROVED",
+                    LocalDateTime.now());
+
+            returnsAdapter.createProductReturn(returnRecord);
+
+            // Step 11+: Trigger statistics observer for analytics tracking (Phase 7)
+            if (this.returnStatsObserver != null) {
+                this.returnStatsObserver.onReturnApproved(returnRecord);
+            }
 
             return refundAmount;
 
